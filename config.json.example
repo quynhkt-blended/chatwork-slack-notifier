@@ -1,0 +1,4 @@
+{
+  "chatwork_api_token": "YOUR_CHATWORK_API_TOKEN",
+  "slack_webhook_url": "https://hooks.slack.com/services/XXXX/XXXX/XXXX"
+}
