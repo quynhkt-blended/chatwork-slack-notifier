@@ -104,22 +104,35 @@ def main():
         account_id = state["account_id"]
         mention_tag = f"[To:{account_id}]"
         seen_task_ids = set(state.get("seen_task_ids", []))
+        last_message_id = state.get("last_message_id", {})
 
         # --- 自分宛てメンションのチェック ---
+        # ChatWork 側の未読フラグには頼らない: 既読になっていても検知できるよう、
+        # 自分で各ルームの「最後に確認したメッセージID」を記録して追跡する。
         rooms = cw_request("/rooms", token)
         for room in rooms:
-            if room.get("mention_num", 0) <= 0:
-                continue
-            room_id = room["room_id"]
-            room_name = room.get("name", str(room_id))
+            room_id = str(room["room_id"])
+            room_name = room.get("name", room_id)
             try:
-                messages = cw_request(f"/rooms/{room_id}/messages", token, {"force": 0})
+                messages = cw_request(f"/rooms/{room_id}/messages", token, {"force": 1})
             except urllib.error.HTTPError as e:
                 log(f"WARN: room {room_id} のメッセージ取得に失敗: {e}")
                 continue
             if not messages:
                 continue
+
+            baseline = last_message_id.get(room_id)
+            max_seen_id = baseline or 0
+            is_first_check = baseline is None
+
             for msg in messages:
+                msg_id = int(msg["message_id"])
+                if msg_id > max_seen_id:
+                    max_seen_id = msg_id
+                if is_first_check:
+                    continue  # 初回は過去分を通知しないが、baselineは更新する
+                if baseline is not None and msg_id <= baseline:
+                    continue
                 body = msg.get("body", "")
                 if mention_tag not in body:
                     continue
@@ -133,6 +146,10 @@ def main():
                 )
                 slack_post(webhook_url, text)
                 log(f"メンション通知を送信: room={room_name} sender={sender}")
+
+            last_message_id[room_id] = max_seen_id
+            if is_first_check:
+                log(f"初回チェックのためbaselineのみ記録: room={room_name} last_message_id={max_seen_id}")
 
         # --- 自分担当タスクのチェック ---
         tasks = cw_request("/my/tasks", token, {"status": "open"})
@@ -161,6 +178,7 @@ def main():
             log(f"タスク通知を送信: room={room_name} task_id={task_id}")
 
         state["seen_task_ids"] = list(seen_task_ids)
+        state["last_message_id"] = last_message_id
         save_json(STATE_PATH, state)
 
     except urllib.error.HTTPError as e:
